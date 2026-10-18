@@ -1,0 +1,556 @@
+using FluentAssertions;
+using FluentValidation;
+using Microsoft.Extensions.Logging;
+using Moq;
+using TalentX.Application.Common.Constants;
+using TalentX.Application.Common.Exceptions;
+using TalentX.Application.Common.Interfaces;
+using TalentX.Application.Common.Interfaces.Repositories;
+using TalentX.Application.Features.Auth.DeleteAccount;
+using TalentX.Application.Identity.Interfaces;
+using TalentX.Application.Identity.Models;
+using TalentX.Application.Identity.Services;
+using TalentX.Domain;
+using TalentX.Domain.Entities;
+using TalentX.Domain.Enums;
+using Xunit;
+using BadGatewayException = TalentX.Application.Common.Exceptions.BadGatewayException;
+using ValidationException = TalentX.Application.Common.Exceptions.ValidationException;
+
+namespace TalentX.Application.Tests.Features.Auth.DeleteAccount;
+
+public class DeleteAccountCommandHandlerTests
+{
+    private const string Email = "user@example.com";
+    private const string IdentityUserId = "identity-1";
+    private const string ValidOtp = "123456";
+
+    private readonly Mock<ICurrentUserService> _currentUserServiceMock = new();
+    private readonly Mock<IUnitOfWork> _unitOfWorkMock = new();
+    private readonly Mock<IUserRepository> _userRepositoryMock = new();
+    private readonly Mock<IJobRepository> _jobRepositoryMock = new();
+    private readonly Mock<IJobApplicationRepository> _jobApplicationRepositoryMock = new();
+    private readonly Mock<IInterviewInvitationRepository> _interviewInvitationRepositoryMock = new();
+    private readonly Mock<IInvitationRepository> _invitationRepositoryMock = new();
+    private readonly Mock<IJobTalentMatchRepository> _jobTalentMatchRepositoryMock = new();
+    private readonly Mock<ISavedJobRepository> _savedJobRepositoryMock = new();
+    private readonly Mock<IResumeRepository> _resumeRepositoryMock = new();
+    private readonly Mock<IWorkExperienceRepository> _workExperienceRepositoryMock = new();
+    private readonly Mock<IEducationRepository> _educationRepositoryMock = new();
+    private readonly Mock<ICompanyRepository> _companyRepositoryMock = new();
+    private readonly Mock<IJobModerationHistoryRepository> _jobModerationHistoryRepositoryMock = new();
+    private readonly Mock<IJobAlertRepository> _jobAlertRepositoryMock = new();
+    private readonly Mock<ITalentNotificationPreferenceRepository> _talentNotificationPreferenceRepositoryMock = new();
+    private readonly Mock<IJobAlertNotificationHistoryRepository> _jobAlertNotificationHistoryRepositoryMock = new();
+    private readonly Mock<INotificationRepository> _notificationRepositoryMock = new();
+    private readonly Mock<ICompanyReviewRepository> _companyReviewRepositoryMock = new();
+    private readonly Mock<IJobReportRepository> _jobReportRepositoryMock = new();
+    private readonly Mock<IInterviewPreparationRepository> _interviewPreparationRepositoryMock = new();
+    private readonly Mock<IIdentityService> _identityServiceMock = new();
+    private readonly Mock<IOtpService> _otpServiceMock = new();
+    private readonly Mock<IEmailService> _emailServiceMock = new();
+    private readonly Mock<IFileStorageService> _fileStorageServiceMock = new();
+    private readonly Mock<ILogger<DeleteAccountCommandHandler>> _loggerMock = new();
+
+    private readonly FakeOtpAttemptTracker _attemptTracker = new();
+    private readonly DeleteAccountCommandHandler _handler;
+
+    public DeleteAccountCommandHandlerTests()
+    {
+        _unitOfWorkMock.SetupGet(u => u.Users).Returns(_userRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.Jobs).Returns(_jobRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.JobApplications).Returns(_jobApplicationRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.InterviewInvitations).Returns(_interviewInvitationRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.Invitations).Returns(_invitationRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.JobTalentMatches).Returns(_jobTalentMatchRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.SavedJobs).Returns(_savedJobRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.Resumes).Returns(_resumeRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.WorkExperiences).Returns(_workExperienceRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.Educations).Returns(_educationRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.Companies).Returns(_companyRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.JobModerationHistories).Returns(_jobModerationHistoryRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.JobAlerts).Returns(_jobAlertRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.TalentNotificationPreferences).Returns(_talentNotificationPreferenceRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.JobAlertNotificationHistories).Returns(_jobAlertNotificationHistoryRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.Notifications).Returns(_notificationRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.CompanyReviews).Returns(_companyReviewRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.JobReports).Returns(_jobReportRepositoryMock.Object);
+        _unitOfWorkMock.SetupGet(u => u.InterviewPreparations).Returns(_interviewPreparationRepositoryMock.Object);
+
+        _currentUserServiceMock.SetupGet(c => c.Email).Returns(Email);
+        _currentUserServiceMock.SetupGet(c => c.UserId).Returns(IdentityUserId);
+
+        _otpServiceMock
+            .Setup(o => o.VerifyOtpAsync(OtpKeys.DeleteAccount(Email), ValidOtp, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        _identityServiceMock
+            .Setup(i => i.DeleteApplicationUserAsync(It.IsAny<string>()))
+            .ReturnsAsync(IdentityResponse.Ok());
+        _identityServiceMock
+            .Setup(i => i.DeleteApplicationUserAsync("identity-fail"))
+            .ReturnsAsync(IdentityResponse.Fail("identity store unavailable"));
+
+        _resumeRepositoryMock
+            .Setup(r => r.GetAllByUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Resume>());
+        _jobApplicationRepositoryMock
+            .Setup(r => r.GetResumeStorageKeysByTalentUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<string>());
+        _jobApplicationRepositoryMock
+            .Setup(r => r.GetResumeStorageKeysByJobIdsAsync(
+                It.IsAny<IReadOnlyCollection<Guid>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<string>());
+
+        _handler = new DeleteAccountCommandHandler(
+            _currentUserServiceMock.Object,
+            _unitOfWorkMock.Object,
+            _identityServiceMock.Object,
+            _otpServiceMock.Object,
+            _attemptTracker,
+            _emailServiceMock.Object,
+            _fileStorageServiceMock.Object,
+            _loggerMock.Object);
+    }
+
+    private static User NewUser(UserRole role) =>
+        new(IdentityUserId, "Test User", Email, role);
+
+    #region OTP verification
+
+    [Fact]
+    public async Task Handle_WithValidOtp_ShouldVerifyAndResetAttemptCounter()
+    {
+        var user = NewUser(UserRole.Talent);
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        _otpServiceMock.Verify(
+            o => o.VerifyOtpAsync(OtpKeys.DeleteAccount(Email), ValidOtp, It.IsAny<CancellationToken>()),
+            Times.Once);
+        (await _attemptTracker.IsBlockedAsync(OtpKeys.DeleteAccount(Email))).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Handle_WithInvalidOtp_ShouldThrowAndRecordFailure()
+    {
+        _otpServiceMock
+            .Setup(o => o.VerifyOtpAsync(OtpKeys.DeleteAccount(Email), "000000", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var act = () => _handler.Handle(new DeleteAccountCommand("000000"), CancellationToken.None);
+
+        await act.Should().ThrowAsync<ValidationException>()
+            .WithMessage("Invalid or expired verification code.");
+        (await _attemptTracker.IsBlockedAsync(OtpKeys.DeleteAccount(Email))).Should().BeFalse();
+        _jobReportRepositoryMock.Verify(
+            r => r.DeleteByReporterUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _interviewPreparationRepositoryMock.Verify(
+            r => r.DeleteByTalentUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WhenAttemptsExhausted_ShouldBlockFurtherVerification()
+    {
+        _otpServiceMock
+            .Setup(o => o.VerifyOtpAsync(OtpKeys.DeleteAccount(Email), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        for (var attempt = 0; attempt < OtpAttemptPolicy.MaxFailedAttempts; attempt++)
+        {
+            var act = () => _handler.Handle(new DeleteAccountCommand("000000"), CancellationToken.None);
+            await act.Should().ThrowAsync<ValidationException>();
+        }
+
+        var blocked = () => _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+        await blocked.Should().ThrowAsync<ValidationException>()
+            .WithMessage("Too many incorrect verification attempts. Request a new code and try again.");
+
+        _otpServiceMock.Verify(
+            o => o.VerifyOtpAsync(OtpKeys.DeleteAccount(Email), ValidOtp, It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    #endregion
+
+    #region Talent deletion
+
+    [Fact]
+    public async Task Handle_ForTalent_ShouldDeleteAllTalentOwnedRowsWithoutTouchingJobs()
+    {
+        var user = NewUser(UserRole.Talent);
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+
+        var result = await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        result.Email.Should().Be(Email);
+        _unitOfWorkMock.Verify(u => u.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _jobRepositoryMock.Verify(j => j.RemoveRange(It.IsAny<IEnumerable<Job>>()), Times.Never);
+        _jobRepositoryMock.Verify(j => j.GetByEmployerIdIncludingDeletedAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWorkMock.Verify(u => u.Companies.DeleteByEmployerIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _companyReviewRepositoryMock.Verify(r => r.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _companyReviewRepositoryMock.Verify(r => r.DeleteByCompanyIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWorkMock.Verify(u => u.JobApplications.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.InterviewInvitations.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.Invitations.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.JobTalentMatches.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.SavedJobs.DeleteByTalentIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.JobAlerts.DeleteByTalentIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.TalentNotificationPreferences.DeleteByTalentIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.JobAlertNotificationHistories.DeleteByTalentIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.Notifications.DeleteByRecipientIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.JobReports.DeleteByReporterUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.InterviewPreparations.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.Resumes.DeleteByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.WorkExperiences.DeleteByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.Educations.DeleteByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _userRepositoryMock.Verify(r => r.Delete(user), Times.Once);
+        _unitOfWorkMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _identityServiceMock.Verify(i => i.DeleteApplicationUserAsync(IdentityUserId), Times.Once);
+        _unitOfWorkMock.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _emailServiceMock.Verify(e => e.SendAccountDeletedEmailAsync(Email, user.Name, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ForTalent_ShouldDeleteTheirReviewsBeforeTheirJobApplications()
+    {
+        var user = NewUser(UserRole.Talent);
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+
+        var calls = new List<string>();
+        _companyReviewRepositoryMock
+            .Setup(r => r.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("reviews"))
+            .Returns(Task.CompletedTask);
+        _jobApplicationRepositoryMock
+            .Setup(r => r.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("applications"))
+            .Returns(Task.CompletedTask);
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        calls.Should().Equal("reviews", "applications");
+    }
+
+    [Fact]
+    public async Task Handle_ForTalent_ShouldCleanUpApplicationOnlyResumeFiles()
+    {
+        var user = NewUser(UserRole.Talent);
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+        _jobApplicationRepositoryMock
+            .Setup(r => r.GetResumeStorageKeysByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<string> { "resumes/user-1/app-only.pdf" });
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        _fileStorageServiceMock.Verify(
+            s => s.DeleteAsync("resumes/user-1/app-only.pdf", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ForTalent_ShouldDeletePreparationsBeforeTheirInterviewInvitations()
+    {
+        var user = NewUser(UserRole.Talent);
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+
+        var calls = new List<string>();
+        _interviewPreparationRepositoryMock
+            .Setup(r => r.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("preparations"))
+            .Returns(Task.CompletedTask);
+        _interviewInvitationRepositoryMock
+            .Setup(r => r.DeleteByTalentUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("invitations"))
+            .Returns(Task.CompletedTask);
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        calls.Should().Equal("preparations", "invitations");
+    }
+
+    #endregion
+
+    #region Employer deletion
+
+    [Fact]
+    public async Task Handle_ForEmployer_ShouldRemoveAllTheirJobsIncludingSoftDeleted()
+    {
+        var user = NewUser(UserRole.Employer);
+        var jobs = new List<Job>
+        {
+            Job.Create(IdentityUserId, "Dev", "TestCo", "Desc",
+                Domain.Enums.EmploymentType.FullTime, Domain.Enums.ExperienceLevel.MidLevel,
+                "Loc", Domain.Enums.WorkArrangement.FullRemote,
+                new List<string> { "C#" }, 1, DateTime.UtcNow.AddDays(30))
+        };
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+        _jobRepositoryMock
+            .Setup(j => j.GetByEmployerIdIncludingDeletedAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(jobs);
+        var company = new Company(IdentityUserId, "TestCo");
+        _companyRepositoryMock
+            .Setup(c => c.GetByEmployerIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(company);
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        _companyReviewRepositoryMock.Verify(r => r.DeleteByCompanyIdAsync(company.Id, It.IsAny<CancellationToken>()), Times.Once);
+        _companyReviewRepositoryMock.Verify(r => r.DeleteByTalentUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _jobRepositoryMock.Verify(j => j.GetByEmployerIdIncludingDeletedAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.JobModerationHistories.DeleteByJobIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.JobReports.DeleteByJobIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.InterviewPreparations.DeleteByJobIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()), Times.Once);
+        _jobRepositoryMock.Verify(j => j.RemoveRange(jobs), Times.Once);
+        _unitOfWorkMock.Verify(u => u.Companies.DeleteByEmployerIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.Notifications.DeleteByRecipientIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        // Talent-scoped cleanup must NOT run for an employer
+        _unitOfWorkMock.Verify(u => u.JobApplications.DeleteByTalentUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWorkMock.Verify(u => u.InterviewPreparations.DeleteByTalentUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWorkMock.Verify(u => u.JobReports.DeleteByReporterUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWorkMock.Verify(u => u.JobAlerts.DeleteByTalentIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWorkMock.Verify(u => u.Resumes.DeleteByUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _identityServiceMock.Verify(i => i.DeleteApplicationUserAsync(IdentityUserId), Times.Once);
+        _unitOfWorkMock.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ForEmployerWithoutACompanyRow_ShouldNotTryToDeleteCompanyReviews()
+    {
+        var user = NewUser(UserRole.Employer);
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+        _companyRepositoryMock
+            .Setup(c => c.GetByEmployerIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Company?)null);
+        _jobRepositoryMock
+            .Setup(j => j.GetByEmployerIdIncludingDeletedAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Job>());
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        _companyReviewRepositoryMock.Verify(r => r.DeleteByCompanyIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWorkMock.Verify(u => u.Companies.DeleteByEmployerIdAsync(IdentityUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _identityServiceMock.Verify(i => i.DeleteApplicationUserAsync(IdentityUserId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ForEmployer_ShouldDeleteTheCompanysReviewsBeforeTheCompany()
+    {
+        var user = NewUser(UserRole.Employer);
+        var company = new Company(IdentityUserId, "TestCo");
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+        _companyRepositoryMock
+            .Setup(c => c.GetByEmployerIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(company);
+        _jobRepositoryMock
+            .Setup(j => j.GetByEmployerIdIncludingDeletedAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Job>());
+
+        var calls = new List<string>();
+        _companyReviewRepositoryMock
+            .Setup(r => r.DeleteByCompanyIdAsync(company.Id, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("reviews"))
+            .Returns(Task.CompletedTask);
+        _companyRepositoryMock
+            .Setup(c => c.DeleteByEmployerIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("company"))
+            .Returns(Task.CompletedTask);
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        calls.Should().Equal("reviews", "company");
+    }
+
+    [Fact]
+    public async Task Handle_ForEmployer_ShouldCleanUpResumesFromJobApplications()
+    {
+        var user = NewUser(UserRole.Employer);
+        var jobs = new List<Job>
+        {
+            Job.Create(IdentityUserId, "Dev", "TestCo", "Desc",
+                Domain.Enums.EmploymentType.FullTime, Domain.Enums.ExperienceLevel.MidLevel,
+                "Loc", Domain.Enums.WorkArrangement.FullRemote,
+                new List<string> { "C#" }, 1, DateTime.UtcNow.AddDays(30))
+        };
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+        _jobRepositoryMock
+            .Setup(j => j.GetByEmployerIdIncludingDeletedAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(jobs);
+        _jobApplicationRepositoryMock
+            .Setup(r => r.GetResumeStorageKeysByJobIdsAsync(
+                It.IsAny<IReadOnlyCollection<Guid>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<string> { "resumes/talent-1/cv.pdf" });
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        _fileStorageServiceMock.Verify(
+            s => s.DeleteAsync("resumes/talent-1/cv.pdf", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ForEmployer_ShouldKeepResumesStillInAProfileLibrary()
+    {
+        var user = NewUser(UserRole.Employer);
+        var jobs = new List<Job>
+        {
+            Job.Create(IdentityUserId, "Dev", "TestCo", "Desc",
+                Domain.Enums.EmploymentType.FullTime, Domain.Enums.ExperienceLevel.MidLevel,
+                "Loc", Domain.Enums.WorkArrangement.FullRemote,
+                new List<string> { "C#" }, 1, DateTime.UtcNow.AddDays(30))
+        };
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+        _jobRepositoryMock
+            .Setup(j => j.GetByEmployerIdIncludingDeletedAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(jobs);
+        _jobApplicationRepositoryMock
+            .Setup(r => r.GetResumeStorageKeysByJobIdsAsync(
+                It.IsAny<IReadOnlyCollection<Guid>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<string> { "resumes/talent-1/cv.pdf" });
+        _resumeRepositoryMock
+            .Setup(r => r.ExistsByStorageKeyAsync("resumes/talent-1/cv.pdf", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        _fileStorageServiceMock.Verify(
+            s => s.DeleteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_ForEmployer_ShouldDeleteReportsAndPreparationsBeforeTheirJobs()
+    {
+        var user = NewUser(UserRole.Employer);
+        var jobs = new List<Job>
+        {
+            Job.Create(IdentityUserId, "Dev", "TestCo", "Desc",
+                Domain.Enums.EmploymentType.FullTime, Domain.Enums.ExperienceLevel.MidLevel,
+                "Loc", Domain.Enums.WorkArrangement.FullRemote,
+                new List<string> { "C#" }, 1, DateTime.UtcNow.AddDays(30))
+        };
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+        _jobRepositoryMock
+            .Setup(j => j.GetByEmployerIdIncludingDeletedAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(jobs);
+        _companyRepositoryMock
+            .Setup(c => c.GetByEmployerIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Company?)null);
+
+        var calls = new List<string>();
+        _jobModerationHistoryRepositoryMock
+            .Setup(r => r.DeleteByJobIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("moderation"))
+            .Returns(Task.CompletedTask);
+        _jobReportRepositoryMock
+            .Setup(r => r.DeleteByJobIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("reports"))
+            .Returns(Task.CompletedTask);
+        _interviewPreparationRepositoryMock
+            .Setup(r => r.DeleteByJobIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("preparations"))
+            .Returns(Task.CompletedTask);
+        _jobRepositoryMock
+            .Setup(j => j.RemoveRange(It.IsAny<IEnumerable<Job>>()))
+            .Callback(() => calls.Add("jobs"));
+
+        await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        calls.Should().Equal("moderation", "reports", "preparations", "jobs");
+    }
+
+    #endregion
+
+    #region Convergence / failure paths
+
+    [Fact]
+    public async Task Handle_WhenUserAlreadyGone_ShouldFinishIdentityCleanupAndNotify()
+    {
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((User?)null);
+
+        var result = await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        result.Email.Should().Be(Email);
+        _unitOfWorkMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWorkMock.Verify(u => u.Notifications.DeleteByRecipientIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _jobReportRepositoryMock.Verify(
+            r => r.DeleteByJobIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()), Times.Never);
+        _interviewPreparationRepositoryMock.Verify(
+            r => r.DeleteByTalentUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _identityServiceMock.Verify(i => i.DeleteApplicationUserAsync(IdentityUserId), Times.Once);
+        _unitOfWorkMock.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _emailServiceMock.Verify(
+            e => e.SendAccountDeletedEmailAsync(Email, Email, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_WhenIdentityDeleteFails_ShouldThrowBadGatewayException()
+    {
+        const string failingUserId = "identity-fail";
+        _currentUserServiceMock.SetupGet(c => c.UserId).Returns(failingUserId);
+        var user = NewUser(UserRole.Talent);
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(failingUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+
+        var act = () => _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        await act.Should().ThrowAsync<BadGatewayException>()
+            .WithMessage("*could not be completed*");
+        _unitOfWorkMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.RollbackTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WhenUserNotFoundByIdentityUserId_FallsBackToEmailAndDeletesDomainData()
+    {
+        var oldUserId = "old-identity-user-id";
+        var user = new Talent(oldUserId, "Talent Patel", Email);
+
+        _userRepositoryMock
+            .Setup(r => r.GetByUserIdAsync(IdentityUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((User?)null);
+
+        _userRepositoryMock
+            .Setup(r => r.GetByEmailAsync(Email, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+
+        var result = await _handler.Handle(new DeleteAccountCommand(ValidOtp), CancellationToken.None);
+
+        result.Email.Should().Be(Email);
+        _userRepositoryMock.Verify(r => r.Delete(user), Times.Once);
+        _unitOfWorkMock.Verify(u => u.JobApplications.DeleteByTalentUserIdAsync(oldUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.Notifications.DeleteByRecipientIdAsync(oldUserId, It.IsAny<CancellationToken>()), Times.Once);
+        _identityServiceMock.Verify(i => i.DeleteApplicationUserAsync(IdentityUserId), Times.Once);
+        _unitOfWorkMock.Verify(u => u.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    #endregion
+}

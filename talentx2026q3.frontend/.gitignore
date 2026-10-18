@@ -1,0 +1,73 @@
+# These are some examples of commonly ignored file patterns.
+# You should customize this list as applicable to your project.
+# Learn more about .gitignore:
+#     https://www.atlassian.com/git/tutorials/saving-changes/gitignore
+
+
+.env
+# Node artifact files
+# Node dependencies
+node_modules/
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# Next.js build and cache
+.next/
+out/
+build/
+dist/
+
+# TypeScript build info and auto-generated env types
+*.tsbuildinfo
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# Testing & Coverage
+coverage/
+TEST*.xml
+
+# Environment variables
+.env
+.env*.local
+
+# Compiled class files
+*.class
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# System and IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Applications
+*.app
+*.exe
+*.war
+
+# Large media files
+*.mp4
+*.tiff
+*.avi
+*.flv
+*.mov
+*.wmv
+
+walkthrough.md
+task.
+walkthrough_Job_listing_frontend.md
+backend_architecture_Job_listing_walkthrough.md
+
+# Local agent/codebase context docs (not shared)
+AGENTS.md
+docs/CODEBASE.md
+docs/CODEBASE_REFERENCE.md
+
+# Vercel
+.vercel/

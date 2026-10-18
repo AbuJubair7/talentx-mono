@@ -1,0 +1,166 @@
+using AutoMapper;
+using MediatR;
+using TalentX.Application.Common.Exceptions;
+using TalentX.Application.Common.Interfaces;
+using TalentX.Application.Features.Resumes;
+using TalentX.Application.Features.Talents.DTOs;
+using TalentX.Application.Features.Talents.Helpers;
+using TalentX.Application.Identity.Services;
+
+namespace TalentX.Application.Features.Talents.Queries.GetTalentProfileForEmployer;
+
+public sealed class GetTalentProfileForEmployerQueryHandler
+    : IRequestHandler<GetTalentProfileForEmployerQuery, TalentPublicProfileResponse>
+{
+    private static readonly TimeSpan DownloadUrlExpiry = TimeSpan.FromMinutes(60);
+
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly IPresignedUrlService _presignedUrlService;
+    private readonly ICurrentUserService _currentUserService;
+    private readonly IMapper _mapper;
+
+    public GetTalentProfileForEmployerQueryHandler(
+        IUnitOfWork unitOfWork,
+        IPresignedUrlService presignedUrlService,
+        ICurrentUserService currentUserService,
+        IMapper mapper)
+    {
+        _unitOfWork = unitOfWork;
+        _presignedUrlService = presignedUrlService;
+        _currentUserService = currentUserService;
+        _mapper = mapper;
+    }
+
+    public async Task<TalentPublicProfileResponse> Handle(
+        GetTalentProfileForEmployerQuery request,
+        CancellationToken cancellationToken)
+    {
+        var currentUserId = _currentUserService.UserId
+            ?? throw new UnauthorizedException("You must be authenticated to view candidate profile.");
+
+        var application = await _unitOfWork.JobApplications.GetByIdAsync(request.ApplicationId, cancellationToken)
+            ?? throw new NotFoundException($"Job application '{request.ApplicationId}' was not found.");
+
+        var job = await _unitOfWork.Jobs.GetByIdAsync(application.JobId, cancellationToken);
+        if (job is null || job.EmployerId != currentUserId)
+        {
+            throw new ForbiddenException("You do not have permission to view candidate profile for this job.");
+        }
+
+        var talent = !string.IsNullOrWhiteSpace(application.TalentUserId)
+            ? await _unitOfWork.Talents.GetByUserIdAsync(application.TalentUserId, cancellationToken)
+            : null;
+        var workExperiences = !string.IsNullOrWhiteSpace(application.TalentUserId)
+            ? await _unitOfWork.WorkExperiences.GetByUserIdAsync(application.TalentUserId, cancellationToken)
+            : [];
+        var educations = !string.IsNullOrWhiteSpace(application.TalentUserId)
+            ? await _unitOfWork.Educations.GetByUserIdAsync(application.TalentUserId, cancellationToken)
+            : [];
+        var projects = !string.IsNullOrWhiteSpace(application.TalentUserId)
+            ? await _unitOfWork.Projects.GetByUserIdAsync(application.TalentUserId, cancellationToken)
+            : [];
+        var resumes = !string.IsNullOrWhiteSpace(application.TalentUserId)
+            ? await _unitOfWork.Resumes.GetAllByUserIdAsync(application.TalentUserId, cancellationToken)
+            : [];
+        var applicationResume = resumes.FirstOrDefault(resume => resume.StorageKey == application.ResumeStorageKey);
+        var profileResume = resumes.FirstOrDefault(resume => resume.IsDefault) ?? resumes.FirstOrDefault();
+
+        // Resume URL prioritizing application resume, falling back to profile resume
+        string? resumeStorageKey = !string.IsNullOrWhiteSpace(application.ResumeStorageKey)
+            ? application.ResumeStorageKey
+            : profileResume?.StorageKey;
+
+        var profilePictureUrlTask = CreateDownloadUrlOrNullAsync(talent?.ProfilePictureStorageKey, cancellationToken);
+        var videoIntroUrlTask = CreateDownloadUrlOrNullAsync(talent?.VideoIntroStorageKey, cancellationToken);
+        var resumeUrlTask = CreateDownloadUrlOrNullAsync(resumeStorageKey, cancellationToken);
+
+        await Task.WhenAll(profilePictureUrlTask, videoIntroUrlTask, resumeUrlTask);
+
+        var rawResumeFileName = applicationResume?.DisplayName
+            ?? (!string.IsNullOrWhiteSpace(application.ResumeStorageKey)
+                ? application.ResumeStorageKey
+                : profileResume?.OriginalFileName ?? profileResume?.StorageKey);
+
+        var resumeOriginalFileName = TalentMediaStorageKeyGuard.ExtractOriginalFileName(rawResumeFileName);
+
+        string? resumeKind;
+        if (applicationResume is not null)
+        {
+            resumeKind = ResumeFileKindResolver.Resolve(applicationResume.ContentType, applicationResume.OriginalFileName);
+        }
+        else if (!string.IsNullOrWhiteSpace(application.ResumeStorageKey))
+        {
+            var uploadedFileName = TalentMediaStorageKeyGuard.ExtractOriginalFileName(application.ResumeStorageKey, string.Empty);
+            resumeKind = ResumeFileKindResolver.Resolve(null, uploadedFileName);
+        }
+        else
+        {
+            resumeKind = ResumeFileKindResolver.Resolve(profileResume?.ContentType, profileResume?.OriginalFileName);
+        }
+
+        var mappedWorkExperiences = _mapper.Map<List<WorkExperienceItemDto>>(workExperiences);
+        var sortedWorkExperiences = ChronologicalOrderingHelper.SortWorkExperiences(
+            mappedWorkExperiences,
+            experience => (experience.IsCurrent, experience.StartDate, experience.EndDate));
+
+        var mappedEducations = _mapper.Map<List<EducationItemDto>>(educations);
+        var sortedEducations = ChronologicalOrderingHelper.SortEducations(
+            mappedEducations,
+            education => (education.StartDate, education.EndDate));
+
+        var mappedProjects = projects.Select(project => new ProjectItemDto(
+            project.Id,
+            project.ProjectName,
+            project.Role,
+            project.ProjectType,
+            project.StartDate,
+            project.EndDate,
+            project.IsOngoing,
+            project.Description,
+            project.TechnologiesUsed,
+            project.ProjectUrl)).ToList();
+
+        var sortedProjects = ChronologicalOrderingHelper.SortWorkExperiences(
+            mappedProjects,
+            project => (project.IsOngoing, project.StartDate, project.EndDate));
+
+        return new TalentPublicProfileResponse(
+            ApplicationId: application.Id,
+            JobId: application.JobId,
+            TalentUserId: application.TalentUserId ?? string.Empty,
+            Name: talent?.Name ?? application.ApplicantName,
+            Email: talent?.Email ?? application.ApplicantEmail,
+            Tagline: talent?.Tagline,
+            ShortBio: talent?.ShortBio,
+            Location: talent?.Location ?? application.Location,
+            LinkedInUrl: talent?.LinkedInUrl,
+            AdditionalUrls: talent?.AdditionalUrls ?? new List<string>(),
+            TotalYearsExperience: talent?.TotalYearsExperience ?? application.TotalYearsExperience,
+            ExpectedSalary: talent?.ExpectedSalary ?? application.ExpectedSalary,
+            SkillPropositions: talent?.SkillPropositions ?? new List<string>(),
+            TechnicalSkills: talent?.TechnicalSkills ?? new List<string>(),
+            SoftSkills: talent?.SoftSkills ?? new List<string>(),
+            ToolsAndPlatforms: talent?.ToolsAndPlatforms ?? new List<string>(),
+            ProfilePictureUrl: await profilePictureUrlTask,
+            VideoIntroUrl: await videoIntroUrlTask,
+            ResumeOriginalFileName: resumeOriginalFileName,
+            ResumeUrl: await resumeUrlTask,
+            ResumeKind: resumeKind,
+            ApplicationStatus: application.Status.ToString(),
+            AiMatchScore: application.AiMatchScore,
+            CoverLetter: application.CoverLetter,
+            AppliedAt: application.AppliedAt,
+            WorkExperiences: sortedWorkExperiences,
+            Educations: sortedEducations,
+            Projects: sortedProjects
+        );
+    }
+
+    private async Task<string?> CreateDownloadUrlOrNullAsync(string? storageKey, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(storageKey))
+            return null;
+
+        return await _presignedUrlService.CreateDownloadUrlAsync(storageKey, DownloadUrlExpiry, cancellationToken);
+    }
+}

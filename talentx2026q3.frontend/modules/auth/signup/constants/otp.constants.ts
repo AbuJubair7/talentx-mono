@@ -1,0 +1,2 @@
+export const OTP_EXPIRY_SECONDS = 120;
+export const OTP_RESEND_COOLDOWN_SECONDS = 120;

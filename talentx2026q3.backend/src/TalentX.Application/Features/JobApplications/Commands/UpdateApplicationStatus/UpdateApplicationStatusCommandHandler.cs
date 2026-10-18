@@ -1,0 +1,58 @@
+using MediatR;
+using TalentX.Application.Common.Exceptions;
+using TalentX.Application.Common.Interfaces;
+using TalentX.Application.Features.JobApplications.DTOs;
+using TalentX.Application.Identity.Services;
+using TalentX.Domain.Entities;
+
+namespace TalentX.Application.Features.JobApplications.Commands.UpdateApplicationStatus;
+
+public sealed class UpdateApplicationStatusCommandHandler : IRequestHandler<UpdateApplicationStatusCommand, StatusUpdateResponseDto>
+{
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly ICurrentUserService _currentUserService;
+
+    public UpdateApplicationStatusCommandHandler(
+        IUnitOfWork unitOfWork,
+        ICurrentUserService currentUserService)
+    {
+        _unitOfWork = unitOfWork;
+        _currentUserService = currentUserService;
+    }
+
+    public async Task<StatusUpdateResponseDto> Handle(UpdateApplicationStatusCommand request, CancellationToken cancellationToken)
+    {
+        var currentUserId = _currentUserService.UserId
+            ?? throw new UnauthorizedException("You must be authenticated to update an application status.");
+
+        var application = await _unitOfWork.JobApplications.GetByIdAsync(request.ApplicationId, cancellationToken)
+            ?? throw new NotFoundException($"Job application '{request.ApplicationId}' was not found.");
+
+        var job = await _unitOfWork.Jobs.GetByIdAsync(application.JobId, cancellationToken);
+        if (job is null || job.EmployerId != currentUserId)
+        {
+            throw new ForbiddenException("You do not have permission to update status for this job application.");
+        }
+
+        if (application.Status == request.NewStatus)
+        {
+            return new StatusUpdateResponseDto($"Application status updated to {request.NewStatus}.");
+        }
+
+        if (request.NewStatus == ApplicationStatus.Applied
+            && !JobApplicationRules.IsRevertibleFrom(application.Status))
+        {
+            throw new ValidationException(
+                "Applied status can only be restored from Shortlisted, Hired, or Rejected.");
+        }
+
+        var fromStatus = application.Status;
+        application.UpdateStatus(request.NewStatus);
+        await _unitOfWork.JobApplicationStatusHistories.AddAsync(
+            JobApplicationStatusHistory.Create(application.Id, fromStatus, request.NewStatus, currentUserId),
+            cancellationToken);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return new StatusUpdateResponseDto($"Application status updated to {request.NewStatus}.");
+    }
+}

@@ -1,0 +1,9 @@
+- `[x]` Create schemas (`employer-job.schema.ts`)
+- `[x]` Create mock data (`mock-data.ts`)
+- `[x]` Create API layer (`employer-jobs.api.ts`)
+- `[x]` Create formatting utilities (`employer-job.format.ts`)
+- `[x]` Create detail components (`job-detail-header.tsx`, `job-detail-tabs.tsx`)
+- `[x]` Create dashboard layout (`app/(employer)/layout.tsx`)
+- `[x]` Create employer jobs list page (`app/(employer)/dashboard/page.tsx`)
+- `[x]` Create employer job detail page (`app/(employer)/dashboard/jobs/[id]/page.tsx`)
+- `[x]` Run build & tests to verify

@@ -1,0 +1,241 @@
+using FluentAssertions;
+using Microsoft.Extensions.Logging;
+using Moq;
+using TalentX.Application.Common.Exceptions;
+using TalentX.Application.Common.Interfaces;
+using TalentX.Application.Common.Interfaces.Repositories;
+using TalentX.Application.Features.JobApplications.Commands.ApplyToJob;
+using TalentX.Application.Identity.Services;
+using TalentX.Domain.Entities;
+using TalentX.Domain.Enums;
+
+namespace TalentX.Application.Tests.Features.JobApplications.Commands.ApplyToJob;
+
+public class ApplyToJobCommandHandlerTests
+{
+    private readonly Mock<IJobRepository> _jobRepository = new();
+    private readonly Mock<IJobApplicationRepository> _jobApplicationRepository = new();
+    private readonly Mock<IJobApplicationStatusHistoryRepository> _historyRepository = new();
+    private readonly Mock<IResumeRepository> _resumeRepository = new();
+    private readonly Mock<IUnitOfWork> _unitOfWork = new();
+    private readonly Mock<ICurrentUserService> _currentUserService = new();
+    private readonly Mock<IFileStorageService> _fileStorageService = new();
+    private readonly Mock<ILogger<ApplyToJobCommandHandler>> _logger = new();
+    private readonly ApplyToJobCommandHandler _handler;
+
+    public ApplyToJobCommandHandlerTests()
+    {
+        _unitOfWork.Setup(u => u.Jobs).Returns(_jobRepository.Object);
+        _unitOfWork.Setup(u => u.JobApplications).Returns(_jobApplicationRepository.Object);
+        _unitOfWork.Setup(u => u.JobApplicationStatusHistories).Returns(_historyRepository.Object);
+        _unitOfWork.Setup(u => u.Resumes).Returns(_resumeRepository.Object);
+        _currentUserService.SetupGet(u => u.UserId).Returns("talent-1");
+        _handler = new ApplyToJobCommandHandler(_unitOfWork.Object, _currentUserService.Object, _fileStorageService.Object, _logger.Object);
+    }
+
+    private static Job PublishedJob()
+    {
+        var job = Job.Create(
+            "employer-1",
+            "Backend Engineer",
+            "Acme Corp",
+            "Build and maintain backend services.",
+            EmploymentType.FullTime,
+            ExperienceLevel.MidLevel,
+            "Dhaka",
+            WorkArrangement.FullRemote,
+            new List<string> { "C#" },
+            1,
+            DateTime.UtcNow.AddDays(30));
+        job.MarkAsPublished();
+        return job;
+    }
+
+    private static ApplyToJobCommand ValidCommand(Guid jobId) => new(
+        jobId,
+        "  Jane Talent  ",
+        "jane@example.com",
+        "resumes/abc_cv.pdf",
+        "  I am a great fit.  ",
+        90000m,
+        5m,
+        "  Dhaka  ");
+
+    [Fact]
+    public async Task Handle_PersistsApplicationWithAppliedStatusAndTrimmedSnapshotValues()
+    {
+        var job = PublishedJob();
+        _jobRepository
+            .Setup(r => r.GetPublishedJobByIdAsync(job.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(job);
+        _jobApplicationRepository
+            .Setup(r => r.ExistsByJobIdAndTalentUserIdAsync(job.Id, "talent-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        JobApplication? added = null;
+        _jobApplicationRepository
+            .Setup(r => r.AddAsync(It.IsAny<JobApplication>(), It.IsAny<CancellationToken>()))
+            .Callback<JobApplication, CancellationToken>((application, _) => added = application)
+            .Returns(Task.CompletedTask);
+
+        var result = await _handler.Handle(ValidCommand(job.Id), CancellationToken.None);
+
+        added.Should().NotBeNull();
+        added!.JobId.Should().Be(job.Id);
+        added.TalentUserId.Should().Be("talent-1");
+        added.ApplicantName.Should().Be("Jane Talent");
+        added.ApplicantEmail.Should().Be("jane@example.com");
+        added.ResumeStorageKey.Should().Be("resumes/abc_cv.pdf");
+        added.CoverLetter.Should().Be("I am a great fit.");
+        added.ExpectedSalary.Should().Be(90000m);
+        added.TotalYearsExperience.Should().Be(5m);
+        added.Location.Should().Be("Dhaka");
+        added.Status.Should().Be(ApplicationStatus.Applied);
+
+        result.Id.Should().Be(added.Id);
+        result.JobId.Should().Be(job.Id);
+        result.Status.Should().Be("Applied");
+        result.AppliedAt.Should().Be(added.AppliedAt);
+
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_TreatsBlankOptionalFieldsAsNull()
+    {
+        var job = PublishedJob();
+        _jobRepository
+            .Setup(r => r.GetPublishedJobByIdAsync(job.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(job);
+        _jobApplicationRepository
+            .Setup(r => r.ExistsByJobIdAndTalentUserIdAsync(job.Id, "talent-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        JobApplication? added = null;
+        _jobApplicationRepository
+            .Setup(r => r.AddAsync(It.IsAny<JobApplication>(), It.IsAny<CancellationToken>()))
+            .Callback<JobApplication, CancellationToken>((application, _) => added = application)
+            .Returns(Task.CompletedTask);
+
+        var command = ValidCommand(job.Id) with { CoverLetter = "   ", Location = "" };
+
+        await _handler.Handle(command, CancellationToken.None);
+
+        added!.CoverLetter.Should().BeNull();
+        added.Location.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Handle_LinksApplicationToTheCallerFromTheToken_NotAnythingInTheRequest()
+    {
+        var job = PublishedJob();
+        _currentUserService.SetupGet(u => u.UserId).Returns("talent-from-token");
+        _jobRepository
+            .Setup(r => r.GetPublishedJobByIdAsync(job.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(job);
+        _jobApplicationRepository
+            .Setup(r => r.ExistsByJobIdAndTalentUserIdAsync(job.Id, "talent-from-token", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        JobApplication? added = null;
+        _jobApplicationRepository
+            .Setup(r => r.AddAsync(It.IsAny<JobApplication>(), It.IsAny<CancellationToken>()))
+            .Callback<JobApplication, CancellationToken>((application, _) => added = application)
+            .Returns(Task.CompletedTask);
+
+        await _handler.Handle(ValidCommand(job.Id), CancellationToken.None);
+
+        added!.TalentUserId.Should().Be("talent-from-token");
+    }
+
+    [Fact]
+    public async Task Handle_WhenJobIsNotOpen_ThrowsNotFoundException_AndDoesNotPersist()
+    {
+        _jobRepository
+            .Setup(r => r.GetPublishedJobByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Job?)null);
+
+        var act = () => _handler.Handle(ValidCommand(Guid.NewGuid()), CancellationToken.None);
+
+        await act.Should().ThrowAsync<NotFoundException>();
+        _jobApplicationRepository.Verify(
+            r => r.ExistsByJobIdAndTalentUserIdAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _jobApplicationRepository.Verify(
+            r => r.AddAsync(It.IsAny<JobApplication>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WithResumeId_UsesTheSavedResumesStorageKey()
+    {
+        var job = PublishedJob();
+        var resume = new Resume(
+            "talent-1", "resumes/talent-1/saved.pdf", "saved.pdf", "application/pdf", 1024,
+            displayName: "Saved Resume", isDefault: true);
+        _jobRepository
+            .Setup(r => r.GetPublishedJobByIdAsync(job.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(job);
+        _jobApplicationRepository
+            .Setup(r => r.ExistsByJobIdAndTalentUserIdAsync(job.Id, "talent-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        _resumeRepository
+            .Setup(r => r.GetByIdAsync(resume.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(resume);
+
+        JobApplication? added = null;
+        _jobApplicationRepository
+            .Setup(r => r.AddAsync(It.IsAny<JobApplication>(), It.IsAny<CancellationToken>()))
+            .Callback<JobApplication, CancellationToken>((application, _) => added = application)
+            .Returns(Task.CompletedTask);
+
+        await _handler.Handle(
+            ValidCommand(job.Id) with { ResumeId = resume.Id, ResumeStorageKey = string.Empty },
+            CancellationToken.None);
+
+        added!.ResumeStorageKey.Should().Be("resumes/talent-1/saved.pdf");
+    }
+
+    [Fact]
+    public async Task Handle_WithResumeIdOfAnotherTalent_ThrowsNotFoundException_AndDoesNotPersist()
+    {
+        var job = PublishedJob();
+        var resume = new Resume("other-talent", "resumes/other-talent/cv.pdf", "cv.pdf", "application/pdf", 1024);
+        _jobRepository
+            .Setup(r => r.GetPublishedJobByIdAsync(job.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(job);
+        _jobApplicationRepository
+            .Setup(r => r.ExistsByJobIdAndTalentUserIdAsync(job.Id, "talent-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        _resumeRepository
+            .Setup(r => r.GetByIdAsync(resume.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(resume);
+
+        var act = () => _handler.Handle(
+            ValidCommand(job.Id) with { ResumeId = resume.Id },
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<NotFoundException>();
+        _jobApplicationRepository.Verify(
+            r => r.AddAsync(It.IsAny<JobApplication>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WhenTalentHasAlreadyApplied_ThrowsConflictException_AndDoesNotPersist()
+    {
+        var job = PublishedJob();
+        _jobRepository
+            .Setup(r => r.GetPublishedJobByIdAsync(job.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(job);
+        _jobApplicationRepository
+            .Setup(r => r.ExistsByJobIdAndTalentUserIdAsync(job.Id, "talent-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var act = () => _handler.Handle(ValidCommand(job.Id), CancellationToken.None);
+
+        await act.Should().ThrowAsync<ConflictException>();
+        _jobApplicationRepository.Verify(
+            r => r.AddAsync(It.IsAny<JobApplication>(), It.IsAny<CancellationToken>()), Times.Never);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+}
+}

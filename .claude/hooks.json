@@ -1,0 +1,16 @@
+{
+  "graphify-auto-update": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.agents/scripts/update-graphify.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

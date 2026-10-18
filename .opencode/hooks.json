@@ -1,0 +1,16 @@
+{
+  "graphify-auto-update": {
+    "PostToolUse": [
+      {
+        "matcher": "write_to_file|replace_file_content|run_command|file_edit|file_write|edit|write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.agents/scripts/update-graphify.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

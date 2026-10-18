@@ -1,0 +1,163 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Npgsql;
+using TalentX.Application.Common.Exceptions;
+using TalentX.Application.Common.Interfaces;
+using TalentX.Application.Common.Interfaces.Repositories;
+using TalentX.Infrastructure.Persistence.Contexts;
+
+namespace TalentX.Infrastructure.Persistence.Repositories;
+
+public sealed class UnitOfWork : IUnitOfWork
+{
+    private readonly ApplicationDbContext _context;
+    private IDbContextTransaction? _currentTransaction;
+
+    public IJobRepository Jobs { get; }
+    public IJobApplicationRepository JobApplications { get; }
+    public IJobApplicationStatusHistoryRepository JobApplicationStatusHistories { get; }
+    public IUserRepository Users { get; }
+    public IEmployerRepository Employers { get; }
+    public ICompanyRepository Companies { get; }
+    public ITalentRepository Talents { get; }
+    public IResumeRepository Resumes { get; }
+    public IWorkExperienceRepository WorkExperiences { get; }
+    public IEducationRepository Educations { get; }
+    public IProjectRepository Projects { get; }
+    public ISavedJobRepository SavedJobs { get; }
+    public IInterviewInvitationRepository InterviewInvitations { get; }
+    public IEmailDispatchLogRepository EmailDispatchLogs { get; }
+    public IInvitationRepository Invitations { get; }
+    public IJobTalentMatchRepository JobTalentMatches { get; }
+    public IAuditLogRepository AuditLogs { get; }
+    public IJobAlertRepository JobAlerts { get; }
+    public ITalentNotificationPreferenceRepository TalentNotificationPreferences { get; }
+    public IJobAlertNotificationHistoryRepository JobAlertNotificationHistories { get; }
+    public INotificationRepository Notifications { get; }
+    public IJobModerationHistoryRepository JobModerationHistories { get; }
+    public IInterviewPreparationRepository InterviewPreparations { get; }
+    public IInterviewPreparationConfigRepository InterviewPreparationConfigs { get; }
+    public ICompanyReviewRepository CompanyReviews { get; }
+    public IJobReportRepository JobReports { get; }
+    public IAiConfigurationRepository AiConfigurations { get; }
+
+    public UnitOfWork(ApplicationDbContext context)
+    {
+        _context = context;
+        Jobs = new JobRepository(_context);
+        JobApplications = new JobApplicationRepository(_context);
+        JobApplicationStatusHistories = new JobApplicationStatusHistoryRepository(_context);
+        Users = new UserRepository(_context);
+        Employers = new EmployerRepository(_context);
+        Companies = new CompanyRepository(_context);
+        Talents = new TalentRepository(_context);
+        Resumes = new ResumeRepository(_context);
+        WorkExperiences = new WorkExperienceRepository(_context);
+        Educations = new EducationRepository(_context);
+        Projects = new ProjectRepository(_context);
+        Invitations = new InvitationRepository(_context);
+        SavedJobs = new SavedJobRepository(_context);
+        InterviewInvitations = new InterviewInvitationRepository(_context);
+        EmailDispatchLogs = new EmailDispatchLogRepository(_context);
+        JobTalentMatches = new JobTalentMatchRepository(_context);
+        AuditLogs = new AuditLogRepository(_context);
+        JobAlerts = new JobAlertRepository(_context);
+        TalentNotificationPreferences = new TalentNotificationPreferenceRepository(_context);
+        JobAlertNotificationHistories = new JobAlertNotificationHistoryRepository(_context);
+        Notifications = new NotificationRepository(_context);
+        JobModerationHistories = new JobModerationHistoryRepository(_context);
+        InterviewPreparations = new InterviewPreparationRepository(_context);
+        InterviewPreparationConfigs = new InterviewPreparationConfigRepository(_context);
+        CompanyReviews = new CompanyReviewRepository(_context);
+        JobReports = new JobReportRepository(_context);
+        AiConfigurations = new AiConfigurationRepository(_context);
+    }
+
+    public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex)
+            when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            // A concurrent insert won the race to a unique index (e.g. two simultaneous
+            // job applications from the same Talent). Surface it as a 409 instead of a 500;
+            // handlers' own pre-checks provide the specific, friendly message in the normal case.
+            throw new ConflictException(
+                "This action conflicts with an existing record. Please refresh and try again.");
+        }
+    }
+
+    public async Task BeginTransactionAsync(CancellationToken cancellationToken = default)
+    {
+        if (_currentTransaction is not null)
+        {
+            return;
+        }
+
+        _currentTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+    }
+
+    public async Task CommitTransactionAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (_currentTransaction is not null)
+            {
+                await _currentTransaction.CommitAsync(cancellationToken);
+            }
+        }
+        catch
+        {
+            await RollbackTransactionAsync(cancellationToken);
+            throw;
+        }
+        finally
+        {
+            if (_currentTransaction is not null)
+            {
+                await _currentTransaction.DisposeAsync();
+                _currentTransaction = null;
+            }
+        }
+    }
+
+    public async Task RollbackTransactionAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (_currentTransaction is not null)
+            {
+                await _currentTransaction.RollbackAsync(cancellationToken);
+            }
+        }
+        finally
+        {
+            if (_currentTransaction is not null)
+            {
+                await _currentTransaction.DisposeAsync();
+                _currentTransaction = null;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_currentTransaction is not null)
+        {
+            _currentTransaction.Dispose();
+            _currentTransaction = null;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_currentTransaction is not null)
+        {
+            await _currentTransaction.DisposeAsync();
+            _currentTransaction = null;
+        }
+    }
+}

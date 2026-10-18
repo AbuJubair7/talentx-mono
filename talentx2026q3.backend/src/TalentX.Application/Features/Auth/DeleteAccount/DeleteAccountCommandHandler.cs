@@ -1,0 +1,220 @@
+using MediatR;
+using Microsoft.Extensions.Logging;
+using TalentX.Application.Common.Constants;
+using TalentX.Application.Common.Exceptions;
+using TalentX.Application.Common.Interfaces;
+using TalentX.Application.Features.Resumes;
+using TalentX.Application.Identity.Interfaces;
+using TalentX.Application.Identity.Services;
+using TalentX.Domain;
+using TalentX.Domain.Enums;
+
+namespace TalentX.Application.Features.Auth.DeleteAccount;
+
+public sealed class DeleteAccountCommandHandler : IRequestHandler<DeleteAccountCommand, DeleteAccountResult>
+{
+    private readonly ICurrentUserService _currentUserService;
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly IIdentityService _identityService;
+    private readonly IOtpService _otpService;
+    private readonly IOtpAttemptTracker _attemptTracker;
+    private readonly IEmailService _emailService;
+    private readonly IFileStorageService _fileStorageService;
+    private readonly ILogger<DeleteAccountCommandHandler> _logger;
+
+    public DeleteAccountCommandHandler(
+        ICurrentUserService currentUserService,
+        IUnitOfWork unitOfWork,
+        IIdentityService identityService,
+        IOtpService otpService,
+        IOtpAttemptTracker attemptTracker,
+        IEmailService emailService,
+        IFileStorageService fileStorageService,
+        ILogger<DeleteAccountCommandHandler> logger)
+    {
+        _currentUserService = currentUserService;
+        _unitOfWork = unitOfWork;
+        _identityService = identityService;
+        _otpService = otpService;
+        _attemptTracker = attemptTracker;
+        _emailService = emailService;
+        _fileStorageService = fileStorageService;
+        _logger = logger;
+    }
+
+    public async Task<DeleteAccountResult> Handle(DeleteAccountCommand request, CancellationToken cancellationToken)
+    {
+        var email = _currentUserService.Email!;
+        var identityUserId = _currentUserService.UserId!;
+
+        var otpKey = OtpKeys.DeleteAccount(email);
+
+        if (await _attemptTracker.IsBlockedAsync(otpKey, cancellationToken))
+        {
+            throw new ValidationException(
+                "Too many incorrect verification attempts. Request a new code and try again.");
+        }
+
+        if (!await _otpService.VerifyOtpAsync(otpKey, request.Otp, cancellationToken))
+        {
+            await _attemptTracker.RecordFailureAsync(otpKey, cancellationToken);
+            throw new ValidationException("Invalid or expired verification code.");
+        }
+
+        await _attemptTracker.ResetAsync(otpKey, cancellationToken);
+
+        var user = await _unitOfWork.Users.GetByUserIdAsync(identityUserId, cancellationToken)
+            ?? await _unitOfWork.Users.GetByEmailAsync(email, cancellationToken);
+        var recipientName = string.IsNullOrWhiteSpace(user?.Name) ? email : user!.Name;
+
+        IReadOnlyList<string> resumeStorageKeys = [];
+
+        await _unitOfWork.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            if (user is not null)
+            {
+                // Storage keys are captured while the rows still exist so the objects
+                // can be cleaned up after the transaction commits.
+                var targetUserId = !string.IsNullOrWhiteSpace(user.UserId) ? user.UserId : identityUserId;
+                resumeStorageKeys = await DeleteOwnedDomainDataAsync(user, targetUserId, cancellationToken);
+            }
+
+            var identityDelete = await _identityService.DeleteApplicationUserAsync(identityUserId);
+            if (!identityDelete.Succeeded)
+            {
+                _logger.LogError(
+                    "Account deletion for {Email}: identity delete failed: {Errors}",
+                    email, string.Join("; ", identityDelete.Errors));
+                throw new BadGatewayException(
+                    "Your account deletion could not be completed. Please try again.");
+            }
+
+            await _unitOfWork.CommitTransactionAsync(cancellationToken);
+        }
+        catch
+        {
+            await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+            throw;
+        }
+
+        foreach (var storageKey in resumeStorageKeys)
+        {
+            try
+            {
+                // Employer deletion can leave files that another talent still has in
+                // their profile library — only delete objects no longer referenced.
+                await ResumeFileCleanup.TryDeleteIfUnreferencedAsync(
+                    _unitOfWork,
+                    _fileStorageService,
+                    storageKey,
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Account deleted for {Email} but the stored resume {StorageKey} could not be removed.",
+                    email,
+                    storageKey);
+            }
+        }
+
+        try
+        {
+            await _emailService.SendAccountDeletedEmailAsync(email, recipientName, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Account deleted for {Email} but the confirmation email failed.", email);
+        }
+
+        _logger.LogInformation(
+            "Account for {Email} permanently deleted. Audit trail recorded via interceptor.",
+            email);
+
+        return new DeleteAccountResult(email);
+    }
+
+    private async Task<IReadOnlyList<string>> DeleteOwnedDomainDataAsync(
+        User user,
+        string identityUserId,
+        CancellationToken cancellationToken)
+    {
+        var resumeStorageKeys = new List<string>();
+
+        if (user.Role == UserRole.Employer)
+        {
+            var jobs = await _unitOfWork.Jobs.GetByEmployerIdIncludingDeletedAsync(identityUserId, cancellationToken);
+            if (jobs.Count > 0)
+            {
+                var jobIds = jobs.Select(j => j.Id).ToList();
+
+                // Every resume attached to the employer's jobs (including soft-deleted
+                // jobs, which are hard-deleted with the account). Files still in a
+                // talent's profile library are retained by the cleanup helper.
+                resumeStorageKeys.AddRange(await _unitOfWork.JobApplications
+                    .GetResumeStorageKeysByJobIdsAsync(jobIds, cancellationToken));
+
+                // Jobs' Restrict-FK children (moderation histories, reports, interview
+                // preparations) must be deleted before the jobs or the delete fails 23503.
+                await _unitOfWork.JobModerationHistories.DeleteByJobIdsAsync(jobIds, cancellationToken);
+                await _unitOfWork.JobReports.DeleteByJobIdsAsync(jobIds, cancellationToken);
+                await _unitOfWork.InterviewPreparations.DeleteByJobIdsAsync(jobIds, cancellationToken);
+                _unitOfWork.Jobs.RemoveRange(jobs);
+            }
+
+            // Reviews are stored against the company, so they go with it.
+            var company = await _unitOfWork.Companies.GetByEmployerIdAsync(identityUserId, cancellationToken);
+            if (company is not null)
+            {
+                await _unitOfWork.CompanyReviews.DeleteByCompanyIdAsync(company.Id, cancellationToken);
+            }
+
+            await _unitOfWork.Companies.DeleteByEmployerIdAsync(identityUserId, cancellationToken);
+        }
+        else if (user.Role == UserRole.Talent)
+        {
+            // Profile library plus application-only uploads, captured before the
+            // rows are removed.
+            var profileResumes = await _unitOfWork.Resumes
+                .GetAllByUserIdAsync(identityUserId, cancellationToken);
+            resumeStorageKeys.AddRange(profileResumes.Select(resume => resume.StorageKey));
+            resumeStorageKeys.AddRange(await _unitOfWork.JobApplications
+                .GetResumeStorageKeysByTalentUserIdAsync(identityUserId, cancellationToken));
+
+            // Reviews first: they reference the job applications deleted next.
+            await _unitOfWork.CompanyReviews.DeleteByTalentUserIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.JobApplications.DeleteByTalentUserIdAsync(identityUserId, cancellationToken);
+
+            // Preparations reference their invitation by cascade FK; deleting them
+            // first keeps audit rows explicit. Job reports have no FK on ReporterUserId.
+            await _unitOfWork.InterviewPreparations.DeleteByTalentUserIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.JobReports.DeleteByReporterUserIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.InterviewInvitations.DeleteByTalentUserIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.Invitations.DeleteByTalentUserIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.JobTalentMatches.DeleteByTalentUserIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.SavedJobs.DeleteByTalentIdAsync(identityUserId, cancellationToken);
+
+            await _unitOfWork.JobAlerts.DeleteByTalentIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.TalentNotificationPreferences.DeleteByTalentIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.JobAlertNotificationHistories.DeleteByTalentIdAsync(identityUserId, cancellationToken);
+
+            await _unitOfWork.Resumes.DeleteByUserIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.WorkExperiences.DeleteByUserIdAsync(identityUserId, cancellationToken);
+            await _unitOfWork.Educations.DeleteByUserIdAsync(identityUserId, cancellationToken);
+        }
+
+        // Both roles receive in-app notifications; RecipientUserId has no FK, so nothing cascades.
+        await _unitOfWork.Notifications.DeleteByRecipientIdAsync(identityUserId, cancellationToken);
+
+        _unitOfWork.Users.Delete(user);
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return resumeStorageKeys
+            .Where(storageKey => !string.IsNullOrWhiteSpace(storageKey))
+            .Distinct()
+            .ToList();
+    }
+}

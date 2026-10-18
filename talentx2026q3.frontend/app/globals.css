@@ -1,0 +1,386 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Interview-prep design tokens (additive — coexist with shadcn tokens above) */
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-ink: #111827;
+  --color-ink-muted: #4b5563;
+  --color-ink-subtle: #6b7280;
+  --color-line: #e5e7eb;
+  --color-line-strong: #d1d5db;
+  --color-brand: #047857;
+  --color-brand-hover: #065f46;
+  --color-brand-soft: #ecfdf5;
+  --color-ai: #5b3cc4;
+  --color-ai-soft: #f5f2fd;
+  --color-ai-line: #e4dcfa;
+  --color-success: #177245;
+  --color-success-soft: #eaf6ef;
+  --color-warning: #8a5a00;
+  --color-warning-soft: #fdf6e7;
+  --color-warning-line: #f2dfb0;
+  --color-danger: #b42318;
+  --color-danger-soft: #fef1f0;
+  --shadow-card: 0 1px 3px rgba(16, 24, 40, 0.08), 0 4px 12px -4px rgba(16, 24, 40, 0.1);
+  --shadow-overlay: 0 24px 48px -12px rgba(16, 24, 40, 0.28);
+}
+
+:root {
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.55 0.18 160);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.65 0.18 160);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    outline-color: var(--ring);
+  }
+  input::placeholder,
+  textarea::placeholder {
+    opacity: 0.85;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+
+  button,
+  [role="button"],
+  select,
+  summary,
+  a[href],
+  [type="button"],
+  [type="submit"],
+  [type="reset"] {
+    cursor: pointer;
+  }
+
+  input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus,
+  input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus-visible,
+  textarea:focus,
+  textarea:focus-visible,
+  select:focus,
+  select:focus-visible {
+    border-color: #059669;
+    box-shadow: none;
+    outline: none;
+  }
+
+  input[type="text"][aria-invalid="true"]:focus-visible,
+  input[type="email"][aria-invalid="true"]:focus-visible,
+  input[type="password"][aria-invalid="true"]:focus-visible,
+  input[type="search"][aria-invalid="true"]:focus-visible,
+  textarea[aria-invalid="true"]:focus-visible {
+    border-color: var(--destructive);
+    box-shadow: none;
+    outline: none;
+  }
+
+  /* Prevent inner rectangular borders or focus shadows on borderless inputs embedded in composite field wrappers */
+  input[class~="border-none"],
+  input[class~="border-none"]:focus,
+  input[class~="border-none"]:focus-visible,
+  input[class~="border-0"],
+  input[class~="border-0"]:focus,
+  input[class~="border-0"]:focus-visible {
+    border-color: transparent !important;
+    border-width: 0 !important;
+    border-style: none !important;
+    box-shadow: none !important;
+    outline: none !important;
+  }
+}
+
+/* ─── Dashboard Background ─── */
+.dashboard-bg {
+  background:
+    radial-gradient(circle at 45% 10%, rgba(219, 245, 239, 0.75), transparent 42%),
+    radial-gradient(circle at 95% 65%, rgba(220, 240, 248, 0.55), transparent 35%),
+    #F8FAFC;
+}
+
+/* ─── Continuous Logo Marquee ─── */
+@keyframes marquee {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+.animate-marquee {
+  animation: marquee 35s linear infinite;
+}
+
+/* ─── Quick-Search Tag Ticker (left → right) ─── */
+@keyframes marquee-right {
+  0% {
+    transform: translateX(-50%);
+  }
+  100% {
+    transform: translateX(0%);
+  }
+}
+
+.animate-marquee-right {
+  animation: marquee-right 28s linear infinite;
+  will-change: transform;
+}
+
+/* ─── Fluid Animations for Hero Title ─── */
+
+@keyframes fluid-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(28px) scale(0.92);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0px) scale(1);
+  }
+}
+
+@keyframes fluid-wave-ripple {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-7px) rotate(-1deg);
+  }
+  50% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  75% {
+    transform: translateY(5px) rotate(0.8deg);
+  }
+}
+
+@keyframes gradient-shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animate-wave-word {
+  display: inline-block;
+  opacity: 0;
+  animation:
+    fluid-rise 0.75s cubic-bezier(0.16, 1, 0.3, 1) forwards,
+    fluid-wave-ripple 4s cubic-bezier(0.45, 0, 0.55, 1) 0.75s infinite;
+  animation-delay: var(--wave-delay, 0s);
+  will-change: transform, opacity;
+}
+
+.animate-gradient-shimmer {
+  background-size: 200% auto;
+  animation: gradient-shimmer 6s ease-in-out infinite;
+}
+
+@keyframes rail-flow {
+  0% {
+    background-position: 50% calc(0% - 420px);
+  }
+  100% {
+    background-position: 50% calc(100% + 420px);
+  }
+}
+
+.animate-rail-flow {
+  background-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(16, 185, 129, 0.95) 45%,
+    rgba(167, 244, 207, 1) 50%,
+    rgba(16, 185, 129, 0.95) 55%,
+    transparent 100%
+  );
+  background-size: 100% 420px;
+  background-repeat: no-repeat;
+  animation: rail-flow 3.5s linear infinite;
+}
+
+@keyframes border-beam-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-border-beam {
+  animation: border-beam-spin 3s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee,
+  .animate-marquee-right,
+  .animate-wave-word,
+  .animate-gradient-shimmer,
+  .animate-border-beam {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .animate-rail-flow {
+    animation: none;
+    background-image: none;
+  }
+}
+
+/* Scoped to .admin-dashboard-print (set by AdminDashboardView) so printing any other page — including the talent
+   and employer portals, which share AppShell with the admin dashboard — is unaffected by these rules. */
+@media print {
+  /* Chrome drops background-color when printing unless told otherwise; this keeps chart bars,
+     status dots and highlighted cards showing the same colours as on screen. */
+  body:has(.admin-dashboard-print) * {
+    print-color-adjust: exact !important;
+    -webkit-print-color-adjust: exact !important;
+  }
+
+  /* Hides AppShell's chrome (sidebar, navbar, decorative backgrounds) and lets its scroll containers grow to
+     the full content height, so the whole dashboard prints instead of one clipped screen. */
+  body:has(.admin-dashboard-print) .app-shell-print-hide {
+    display: none !important;
+  }
+
+  body:has(.admin-dashboard-print) .app-shell-print-expand {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* The print trend chart is drawn at a fixed pixel size (see TrendChart.tsx). recharts wraps its own
+     svg in a div with an inline pixel width/height, so both that wrapper and the svg itself need
+     stretching to the full printed width, or the svg's 100% just resolves against the wrapper's
+     leftover fixed width and nothing changes. */
+  .print-trend-chart > div,
+  .print-trend-chart svg {
+    width: 100% !important;
+    height: auto !important;
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "entries": [
+    {
+      "path": ".agents/plugins/jira-mcp"
+    },
+    {
+      "path": ".agents/plugins/composio"
+    },
+    {
+      "path": ".agents/plugins/ponytail"
+    }
+  ],
+  "skills": [
+    {
+      "path": ".agents/skills/dotnet-clean-architecture"
+    },
+    {
+      "path": ".agents/skills/feature-development"
+    },
+    {
+      "path": ".agents/skills/jira-ticket-planner"
+    },
+    {
+      "path": ".agents/skills/pr-description"
+    },
+    {
+      "path": ".agents/skills/ponytail"
+    },
+    {
+      "path": ".agents/skills/create-jira-story"
+    },
+    {
+      "path": ".agents/skills/create-jira-bug"
+    }
+  ]
+}

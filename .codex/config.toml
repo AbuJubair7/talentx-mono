@@ -1,0 +1,20 @@
+# TalentX Backend — Codex CLI Configuration
+
+model = "o4-mini"
+
+# Jira MCP Server
+[mcp_servers.jira]
+command = "npx"
+args = ["-y", "@nexus2520/jira-mcp-server"]
+
+[mcp_servers.jira.env]
+JIRA_BASE_URL = "https://talentx.atlassian.net/"
+JIRA_EMAIL = "your-email@company.com"
+JIRA_API_TOKEN = "YOUR_JIRA_API_TOKEN"
+
+# Composio MCP Server
+[mcp_servers.composio]
+url = "https://connect.composio.dev/mcp"
+
+[mcp_servers.composio.headers]
+x-consumer-api-key = "YOUR_COMPOSIO_API_KEY"

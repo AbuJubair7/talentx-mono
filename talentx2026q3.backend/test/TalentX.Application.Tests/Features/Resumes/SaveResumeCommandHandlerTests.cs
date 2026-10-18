@@ -1,0 +1,326 @@
+using FluentAssertions;
+using Microsoft.Extensions.Logging;
+using Moq;
+using TalentX.Application.Common.Exceptions;
+using TalentX.Application.Common.Interfaces;
+using TalentX.Application.Common.Interfaces.Repositories;
+using TalentX.Application.Common.Models;
+using TalentX.Application.Features.Resumes.Commands.SaveResume;
+using TalentX.Application.Identity.Services;
+using TalentX.Domain;
+using TalentX.Domain.Entities;
+using Xunit;
+
+namespace TalentX.Application.Tests.Features.Resumes;
+
+public class SaveResumeCommandHandlerTests
+{
+    private readonly Mock<IUnitOfWork> _unitOfWork = new();
+    private readonly Mock<ITalentRepository> _talentRepository = new();
+    private readonly Mock<IResumeRepository> _resumeRepository = new();
+    private readonly Mock<IWorkExperienceRepository> _workExperienceRepository = new();
+    private readonly Mock<IEducationRepository> _educationRepository = new();
+    private readonly Mock<IProjectRepository> _projectRepository = new();
+    private readonly Mock<IFileStorageService> _fileStorageService = new();
+    private readonly Mock<IResumeExtractionService> _resumeExtractionService = new();
+    private readonly Mock<ICurrentUserService> _currentUserService = new();
+    private readonly Mock<ILogger<SaveResumeCommandHandler>> _logger = new();
+    private readonly SaveResumeCommandHandler _handler;
+
+    public SaveResumeCommandHandlerTests()
+    {
+        _unitOfWork.SetupGet(u => u.Talents).Returns(_talentRepository.Object);
+        _unitOfWork.SetupGet(u => u.Resumes).Returns(_resumeRepository.Object);
+        _unitOfWork.SetupGet(u => u.WorkExperiences).Returns(_workExperienceRepository.Object);
+        _unitOfWork.SetupGet(u => u.Educations).Returns(_educationRepository.Object);
+        _unitOfWork.SetupGet(u => u.Projects).Returns(_projectRepository.Object);
+        _currentUserService.SetupGet(u => u.UserId).Returns("user-1");
+
+        _unitOfWork
+            .Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+        _resumeRepository
+            .Setup(r => r.CountByUserIdAsync("user-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+        _fileStorageService
+            .Setup(s => s.SaveAsync(It.IsAny<IUploadedFile>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IUploadedFile _, string storageFileName, CancellationToken _) => storageFileName);
+
+        _handler = new SaveResumeCommandHandler(
+            _unitOfWork.Object,
+            _fileStorageService.Object,
+            _resumeExtractionService.Object,
+            _currentUserService.Object,
+            _logger.Object);
+    }
+
+    private static Mock<IUploadedFile> ValidFileMock()
+    {
+        var fileMock = new Mock<IUploadedFile>();
+        fileMock.Setup(f => f.FileName).Returns("resume.pdf");
+        fileMock.Setup(f => f.ContentType).Returns("application/pdf");
+        fileMock.Setup(f => f.Length).Returns(1024);
+        return fileMock;
+    }
+
+    [Fact]
+    public async Task Handle_SavesFirstResumeAsDefault_UnderUserScopedStorageKey()
+    {
+        Resume? added = null;
+        _resumeRepository
+            .Setup(r => r.AddAsync(It.IsAny<Resume>(), It.IsAny<CancellationToken>()))
+            .Callback<Resume, CancellationToken>((resume, _) => added = resume)
+            .Returns(Task.CompletedTask);
+
+        var result = await _handler.Handle(
+            new SaveResumeCommand(ValidFileMock().Object, null, UpdateProfile: false),
+            CancellationToken.None);
+
+        added.Should().NotBeNull();
+        added!.IsDefault.Should().BeTrue();
+        added.DisplayName.Should().Be("resume");
+        added.StorageKey.Should().StartWith("resumes/user-1/");
+        added.StorageKey.Should().EndWith("_resume.pdf");
+        result.IsDefault.Should().BeTrue();
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _resumeExtractionService.Verify(
+            s => s.ExtractAsync(It.IsAny<IUploadedFile>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WithExplicitDisplayName_UsesIt()
+    {
+        Resume? added = null;
+        _resumeRepository
+            .Setup(r => r.AddAsync(It.IsAny<Resume>(), It.IsAny<CancellationToken>()))
+            .Callback<Resume, CancellationToken>((resume, _) => added = resume)
+            .Returns(Task.CompletedTask);
+
+        var result = await _handler.Handle(
+            new SaveResumeCommand(ValidFileMock().Object, "Backend Resume", UpdateProfile: false),
+            CancellationToken.None);
+
+        added!.DisplayName.Should().Be("Backend Resume");
+        result.DisplayName.Should().Be("Backend Resume");
+    }
+
+    [Fact]
+    public async Task Handle_WhenUserAlreadyHasFiveResumes_ThrowsConflict_AndTouchesNoStorage()
+    {
+        _resumeRepository
+            .Setup(r => r.CountByUserIdAsync("user-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Resume.MaxPerUser);
+
+        var act = () => _handler.Handle(
+            new SaveResumeCommand(ValidFileMock().Object, null, UpdateProfile: false),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<ConflictException>();
+        _fileStorageService.Verify(
+            s => s.SaveAsync(It.IsAny<IUploadedFile>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WhenFileSaveFails_ThrowsBadGateway_AndDoesNotPersist()
+    {
+        _fileStorageService
+            .Setup(s => s.SaveAsync(It.IsAny<IUploadedFile>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("Storage unavailable"));
+
+        var act = () => _handler.Handle(
+            new SaveResumeCommand(ValidFileMock().Object, null, UpdateProfile: false),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<BadGatewayException>();
+        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WhenSaveChangesFails_DeletesStoredFileAndRethrows()
+    {
+        _unitOfWork
+            .Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Database unavailable"));
+
+        var act = () => _handler.Handle(
+            new SaveResumeCommand(ValidFileMock().Object, null, UpdateProfile: false),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _fileStorageService.Verify(
+            s => s.DeleteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_WithUpdateProfile_AppliesExtractionToTalentAndChildRecords()
+    {
+        var talent = new Talent("user-1", "Jane Doe", "jane@example.com");
+        _talentRepository
+            .Setup(r => r.GetByUserIdAsync("user-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(talent);
+        _resumeExtractionService
+            .Setup(s => s.ExtractAsync(It.IsAny<IUploadedFile>(), ResumeExtractionPurpose.CandidateProfile, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ResumeExtractionResult
+            {
+                FullName = "Jane Extraction",
+                Tagline = "Extracted Tagline",
+                ShortBio = "Extracted Bio",
+                Location = "New York, NY",
+                Phone = "+12125551234",
+                LinkedInUrl = "https://linkedin.com/in/janeextracted",
+                PortfolioUrls = ["https://extracted.dev"],
+                TechnicalSkills = ["C#"],
+                SoftSkills = ["Communication"],
+                ToolsAndPlatforms = ["Git"],
+                WorkExperience =
+                [
+                    new WorkExperienceDto
+                    {
+                        CompanyName = "Acme",
+                        JobTitle = "Engineer",
+                        StartDate = "2020",
+                        EndDate = "Present",
+                        IsCurrent = true
+                    }
+                ],
+                Education =
+                [
+                    new EducationDto
+                    {
+                        Institution = "State University",
+                        Degree = "BSc",
+                        StartDate = "2016",
+                        EndDate = "2020"
+                    }
+                ],
+                Projects =
+                [
+                    new ExtractedProjectDto
+                    {
+                        ProjectName = "TalentX Platform",
+                        Role = "Backend Engineer",
+                        ProjectType = "Professional",
+                        StartDate = "2023",
+                        EndDate = "Present",
+                        IsOngoing = true,
+                        Description = "AI Platform",
+                        TechnologiesUsed = ["C#", ".NET"],
+                        ProjectUrl = "https://talentx.ai"
+                    }
+                ]
+            });
+
+        var savedResumeDto = await _handler.Handle(
+            new SaveResumeCommand(ValidFileMock().Object, null, UpdateProfile: true),
+            CancellationToken.None);
+
+        savedResumeDto.IsDefault.Should().BeTrue();
+        savedResumeDto.ExtractedProfile.Should().NotBeNull();
+        savedResumeDto.ExtractedProfile!.FullName.Should().Be("Jane Extraction");
+        savedResumeDto.ExtractedProfile.ResumeUploadId.Should().Be(savedResumeDto.Id);
+        savedResumeDto.AiServiceUnavailable.Should().BeFalse();
+
+        _talentRepository.Verify(
+            repository => repository.GetByUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _workExperienceRepository.Verify(
+            repository => repository.DeleteByUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _workExperienceRepository.Verify(
+            repository => repository.AddAsync(It.IsAny<WorkExperience>(), It.IsAny<CancellationToken>()), Times.Never);
+        _educationRepository.Verify(
+            repository => repository.DeleteByUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _educationRepository.Verify(
+            repository => repository.AddAsync(It.IsAny<Education>(), It.IsAny<CancellationToken>()), Times.Never);
+        _projectRepository.Verify(
+            repository => repository.DeleteByUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _projectRepository.Verify(
+            repository => repository.AddAsync(It.IsAny<Project>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WithUpdateProfile_WhenTalentAlreadyHasProfileFields_DoesNotMutateExistingProfileFields()
+    {
+        var talent = new Talent("user-1", "Jane Doe", "jane@example.com");
+        talent.UpdateProfile(
+            "Jane Doe",
+            "Existing Tagline",
+            "Existing Bio",
+            "Existing Location",
+            "Existing Phone",
+            "https://linkedin.com/in/existing",
+            ["https://existing.dev"],
+            10m,
+            150000m,
+            ["Existing Proposition"]);
+
+        _talentRepository
+            .Setup(r => r.GetByUserIdAsync("user-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(talent);
+        _resumeExtractionService
+            .Setup(s => s.ExtractAsync(It.IsAny<IUploadedFile>(), ResumeExtractionPurpose.CandidateProfile, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ResumeExtractionResult
+            {
+                FullName = "Extracted Name",
+                Tagline = "Extracted Tagline",
+                ShortBio = "Extracted Bio",
+                Location = "Extracted Location",
+                Phone = "Extracted Phone",
+                LinkedInUrl = "https://linkedin.com/in/extracted",
+                PortfolioUrls = ["https://extracted.dev"],
+                TechnicalSkills = ["Python"]
+            });
+
+        var savedResumeDto = await _handler.Handle(
+            new SaveResumeCommand(ValidFileMock().Object, null, UpdateProfile: true),
+            CancellationToken.None);
+
+        savedResumeDto.ExtractedProfile.Should().NotBeNull();
+        savedResumeDto.ExtractedProfile!.FullName.Should().Be("Extracted Name");
+        talent.Name.Should().Be("Jane Doe");
+        talent.Tagline.Should().Be("Existing Tagline");
+        talent.ShortBio.Should().Be("Existing Bio");
+        talent.Location.Should().Be("Existing Location");
+        talent.Phone.Should().Be("Existing Phone");
+        talent.LinkedInUrl.Should().Be("https://linkedin.com/in/existing");
+        talent.AdditionalUrls.Should().Equal("https://existing.dev");
+        talent.TotalYearsExperience.Should().Be(10m);
+        talent.ExpectedSalary.Should().Be(150000m);
+        talent.SkillPropositions.Should().Equal("Existing Proposition");
+        _talentRepository.Verify(repository => repository.GetByUserIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WhenExtractionFails_SavesResumeSuccessfully_AndSetsAiServiceUnavailableFlag()
+    {
+        _resumeExtractionService
+            .Setup(service => service.ExtractAsync(It.IsAny<IUploadedFile>(), ResumeExtractionPurpose.CandidateProfile, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("AI down"));
+
+        Resume? addedResume = null;
+        _resumeRepository
+            .Setup(repository => repository.AddAsync(It.IsAny<Resume>(), It.IsAny<CancellationToken>()))
+            .Callback<Resume, CancellationToken>((resume, _) => addedResume = resume)
+            .Returns(Task.CompletedTask);
+
+        var savedResumeDto = await _handler.Handle(
+            new SaveResumeCommand(ValidFileMock().Object, null, UpdateProfile: true),
+            CancellationToken.None);
+
+        _fileStorageService.Verify(
+            service => service.SaveAsync(It.IsAny<IUploadedFile>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        _resumeRepository.Verify(
+            repository => repository.AddAsync(It.IsAny<Resume>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        _unitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Once);
+        savedResumeDto.Should().NotBeNull();
+        savedResumeDto.AiServiceUnavailable.Should().BeTrue();
+        savedResumeDto.ExtractedProfile.Should().BeNull();
+        addedResume.Should().NotBeNull();
+    }
+}

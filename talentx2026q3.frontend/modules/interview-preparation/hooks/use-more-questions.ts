@@ -1,0 +1,23 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import { PREPARATION_QUERY_KEYS } from '../constants';
+import { interviewPreparationService } from '../services/interview-preparation.service';
+import type { ApiError } from '@/lib/api/axios';
+import type { InterviewPreparationDto } from '../types';
+
+export function useMoreQuestions() {
+  const queryClient = useQueryClient();
+
+  return useMutation<InterviewPreparationDto, ApiError, string>({
+    mutationFn: (invitationId: string) =>
+      interviewPreparationService.generateMoreQuestions(invitationId),
+    onSuccess: (data, invitationId) => {
+      queryClient.setQueryData(PREPARATION_QUERY_KEYS.detail(invitationId), data);
+      queryClient.invalidateQueries({ queryKey: PREPARATION_QUERY_KEYS.quota() });
+      toast.success('More questions generated successfully.');
+    },
+    onError: (error) => {
+      toast.error(error.message || 'Failed to generate more questions.');
+    },
+  });
+}
